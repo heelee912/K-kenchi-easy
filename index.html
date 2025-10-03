@@ -1,0 +1,346 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>K-kenchi — 시군구 경현치 맵</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<style>
+  html, body { height: 100%; margin: 0; font-family: system-ui, -apple-system, Segoe UI, Roboto, 'Noto Sans KR', sans-serif; }
+  #layout { display: grid; grid-template-columns: 360px 1fr; height: 100vh; }
+  #side { border-right: 1px solid #eee; padding: 14px; display: flex; flex-direction: column; gap: 12px; overflow-y: auto; }
+  #side h1 { font-size: 18px; margin: 0 0 4px 0; }
+  #map { width: 100%; height: 100%; background: #ffffff; }
+  .sec { border: 1px solid #eee; border-radius: 10px; padding: 10px; background: #fafafa; }
+  .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .btn { padding: 6px 10px; border: 1px solid #ddd; background: white; border-radius: 8px; cursor: pointer; }
+  .btn:hover { background: #f0f0f0; }
+  .lvbtn { padding: 6px 8px; border: 1px solid #ddd; border-radius: 8px; cursor: pointer; background: white; }
+  .lvbtn.active { background: #222; color: #fff; }
+  .muted { color: #666; font-size: 12px; }
+  .sel { font-weight: 700; }
+  input[type=text]{ padding:6px; border:1px solid #ddd; border-radius:8px; width:100%; }
+  input[type=range]{ width:100%; }
+  .stack { display:flex; flex-direction:column; gap:6px; }
+  @media (max-width: 880px){
+    #layout { grid-template-columns: 1fr; grid-template-rows: 360px 1fr; }
+    #side { border-right: none; border-bottom: 1px solid #eee; }
+  }
+</style>
+</head>
+<body>
+<div id="layout">
+  <aside id="side">
+    <h1>🇰🇷 K-kenchi</h1>
+
+    <div class="sec stack">
+      <div class="muted">지도를 클릭하면 <b>시·군·구</b> 단위로 선택됩니다. 선택 윤곽선은 폴리곤 경계만 강조됩니다.</div>
+      <div>선택: <span id="selName" class="sel">없음</span></div>
+      <div class="row">
+        <button class="lvbtn" data-level="5">거주 5</button>
+        <button class="lvbtn" data-level="4">숙박 4</button>
+        <button class="lvbtn" data-level="3">방문 3</button>
+        <button class="lvbtn" data-level="2">접지 2</button>
+        <button class="lvbtn" data-level="1">통과 1</button>
+        <button class="lvbtn" data-level="0">미답 0</button>
+      </div>
+      <div class="row">
+        메모: <input id="noteBox" placeholder="선택 구역 메모" />
+        <button class="btn" id="btnApplyOne">적용</button>
+      </div>
+      <div class="muted">로딩 상태: <span id="loadState">대기</span></div>
+    </div>
+
+    <div class="sec stack">
+      <div>총점 <b id="sumScore">0</b> · 채운 지역 <b id="countFilled">0</b></div>
+    </div>
+
+    <div class="sec stack">
+      <label>전체 불투명도: <span id="opacityVal">50%</span></label>
+      <input id="opacitySlider" type="range" min="1" max="100" value="50" />
+      <div class="muted">모든 구역에 동일하게 적용됩니다.</div>
+    </div>
+
+    <div class="sec">
+      <div class="row">
+        <button class="btn" id="btnExport">JSON 내보내기</button>
+        <input type="file" id="importJson" accept=".json" style="display:none;">
+        <button class="btn" id="btnImport">JSON 불러오기</button>
+      </div>
+      <div class="muted">데이터: 시·도 분할 GeoJSON + 북한 외부 로딩</div>
+    </div>
+  </aside>
+  <main id="map"></main>
+</div>
+
+<!-- 시도 분할 파일 목록: 파일명이 다르면 여기만 수정 -->
+<script>
+  const SIDO_FILES = [
+    "data/11_seoul.json","data/26_busan.json","data/27_daegu.json","data/28_incheon.json",
+    "data/29_gwangju.json","data/30_daejeon.json","data/31_ulsan.json","data/36_sejong.json",
+    "data/41_gyeonggi.json","data/51_gangwon.json","data/43_chungbuk.json","data/44_chungnam.json",
+    "data/45_jeonbuk.json","data/46_jeonnam.json","data/47_gyeongbuk.json","data/48_gyeongnam.json",
+    "data/50_jeju.json"
+  ];
+
+  const LEVELS = {5:'거주',4:'숙박',3:'방문',2:'접지',1:'통과',0:'미답'};
+  const weights = {5:5, 4:4, 3:3, 2:2, 1:1, 0:0};
+
+  /* 강원 prefix가 51인 데이터셋 기준. 42를 쓰신다면 여기와 파일명 둘 다 42로 바꾸십시오. */
+  const SIDO_MAP = {
+    '11':'서울특별시','26':'부산광역시','27':'대구광역시','28':'인천광역시','29':'광주광역시',
+    '30':'대전광역시','31':'울산광역시','36':'세종특별자치시',
+    '41':'경기도','51':'강원특별자치도',
+    '43':'충청북도','44':'충청남도','45':'전북특별자치도','46':'전라남도',
+    '47':'경상북도','48':'경상남도','50':'제주특별자치도'
+  };
+</script>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+  let map = L.map('map', { preferCanvas:true }).setView([36.4, 127.8], 7);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{ attribution:'&copy; OpenStreetMap' }).addTo(map);
+
+  let selectedKey = null;
+  let dataMap = new Map();          // key=SIG_CD 또는 임시키 -> {level, notes, name}
+  const layerByKey = new Map();     // 대표 레이어
+  let globalOpacity = 0.5;
+
+  const $ = (id)=>document.getElementById(id);
+  const baseStroke = { weight: 0.7, color: '#777', opacity: 0.9, lineJoin: 'round' };
+  const hiStroke   = { weight: 2.2, color: '#111', opacity: 1.0, lineJoin: 'round' };
+
+  function scoreOfLevel(l){ return weights[l] ?? 0; }
+  function computeStats(){ let sum=0, filled=0; dataMap.forEach(v=>{ sum+=scoreOfLevel(v.level); if(v.level>0) filled++; }); $('sumScore').textContent=sum; $('countFilled').textContent=filled; }
+  function colorFor(v){ if(v<=0) return '#f0f0f0'; const t=Math.max(0,Math.min(1,v/5)); const hue=210-210*t; const light=85-45*t; return `hsl(${hue},70%,${light}%)`; }
+  function labelFor(code, sigName){ const sido = SIDO_MAP[(code||'').toString().slice(0,2)] || ''; return (sido? (sido+' '):'') + (sigName||''); }
+
+  function setActive(key){
+    if(selectedKey && layerByKey.has(selectedKey)){
+      layerByKey.get(selectedKey).setStyle({ ...baseStroke, fillOpacity: globalOpacity });
+    }
+    selectedKey=key;
+    if(selectedKey && layerByKey.has(selectedKey)){
+      const ly=layerByKey.get(selectedKey);
+      ly.setStyle({ ...hiStroke, fillOpacity: globalOpacity });
+      ly.bringToFront && ly.bringToFront();
+    }
+  }
+
+  function recolor(){
+    layerByKey.forEach((layer,key)=>{
+      const rec=dataMap.get(key);
+      const val=rec?scoreOfLevel(rec.level):0;
+      const fillColor=colorFor(val);
+      const isActive=(key===selectedKey);
+      const stroke = isActive? hiStroke: baseStroke;
+      try{
+        layer.setStyle({ fillColor, fillOpacity: globalOpacity, ...stroke });
+        const tip=[`<b>${rec?rec.name:'구역'}</b>`, rec?`레벨: ${LEVELS[rec.level]} (${rec.level})`: '레벨: 미입력', rec&&rec.notes?`메모: ${rec.notes}`:''].filter(Boolean).join('<br/>');
+        layer.bindTooltip(tip,{sticky:true});
+      }catch(e){}
+    });
+    computeStats();
+  }
+
+  function updateButtons(key){
+    const rec=dataMap.get(key)||{level:0,notes:'',name:''};
+    document.querySelectorAll('.lvbtn').forEach(b=>b.classList.toggle('active', +b.dataset.level===+rec.level));
+    $('noteBox').value=rec.notes||'';
+    $('selName').textContent=rec.name||'없음';
+  }
+  function ensureRec(key, name){
+    if(!dataMap.has(key)) dataMap.set(key, {level:0,notes:'',name});
+    else { const o=dataMap.get(key); if(name && !o.name){ o.name=name; dataMap.set(key,o);} }
+  }
+
+  async function fetchJSON(url){
+    const res = await fetch(url, { cache: 'no-store' });
+    if(!res.ok) throw new Error(res.status+' '+res.statusText);
+    return await res.json();
+  }
+
+  async function loadOne(url){
+    const gj = await fetchJSON(url);
+    if(!gj || !gj.features || !Array.isArray(gj.features)) return null;
+    const layer = L.geoJSON(gj, {
+      onEachFeature: (f, layer)=>{
+        const p = f.properties || {};
+        const code = (p.SIG_CD||'').toString();
+        const sig  = (p.SIG_KOR_NM||'').toString();
+        if(!code || !sig) return;
+        layerByKey.set(code, layer);
+        ensureRec(code, labelFor(code, sig));
+        layer.on('click', ()=>{ setActive(code); updateButtons(code); });
+      },
+      style: { ...baseStroke, fillColor:'#f0f0f0', fillOpacity: globalOpacity }
+    }).addTo(map);
+    try { return layer.getBounds(); } catch(e){ return null; }
+  }
+
+  // v13 방식 + 폴백 포함 북한 외부 로딩
+  async function loadNK(){
+    const baseStroke = { weight:0.7, color:"#777", opacity:0.9, lineJoin:"round" };
+    const applyLayer = (feat) => {
+      const layer = L.geoJSON(feat, {
+        style: { ...baseStroke, fillColor:"#dddddd", fillOpacity: globalOpacity }
+      }).addTo(map);
+      const key = "NK";
+      layerByKey.set(key, layer);
+      if(!dataMap.has(key)) dataMap.set(key, { level:0, notes:"", name:"북한" });
+      layer.on("click", ()=>{ setActive(key); updateButtons(key); });
+      recolor();
+    };
+
+    // 1) geoBoundaries PRK ADM0
+    try {
+      const metaRes = await fetch("https://www.geoboundaries.org/api/current/gbOpen/PRK/ADM0/", { cache:"no-store" });
+      if (!metaRes.ok) throw new Error("geoBoundaries meta " + metaRes.status);
+      const meta = await metaRes.json();
+      const url = (Array.isArray(meta) ? meta[0] : meta).gjDownloadURL;
+      if (!url) throw new Error("geoBoundaries gjDownloadURL missing");
+      const gjRes = await fetch(url, { cache:"no-store" });
+      if (!gjRes.ok) throw new Error("geoBoundaries gj " + gjRes.status);
+      const gj = await gjRes.json();
+      const feat = gj.features?.[0];
+      if (!feat) throw new Error("geoBoundaries: no features");
+      applyLayer(feat);
+      console.info("[K-kenchi] NK loaded from geoBoundaries:", url);
+      return;
+    } catch(e) {
+      console.warn("[K-kenchi] geoBoundaries failed:", e);
+    }
+
+    // 2) Natural Earth 50m
+    try {
+      const url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson/ne_50m_admin_0_countries.geojson";
+      const res = await fetch(url, { cache:"no-store" });
+      if(!res.ok) throw new Error(res.status + " " + res.statusText);
+      const gj = await res.json();
+      const feat = (gj.features||[]).find(f => {
+        const p = f.properties||{};
+        const iso = (p.ISO_A3 || p.ADM0_A3 || p.SOV_A3 || "").toUpperCase();
+        const name= (p.NAME || p.NAME_LONG || p.FORMAL_EN || p.ADMIN || "").toUpperCase();
+        return iso==="PRK" || name.includes("KOREA, NORTH") || name.includes("NORTH KOREA");
+      });
+      if(!feat) throw new Error("Natural Earth 50m: PRK not found");
+      applyLayer(feat);
+      console.info("[K-kenchi] NK loaded from Natural Earth 50m:", url);
+      return;
+    } catch(e) {
+      console.warn("[K-kenchi] Natural Earth 50m failed:", e);
+    }
+
+    // 3) Natural Earth 110m
+    try {
+      const url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson/ne_110m_admin_0_countries.geojson";
+      const res = await fetch(url, { cache:"no-store" });
+      if(!res.ok) throw new Error(res.status + " " + res.statusText);
+      const gj = await res.json();
+      const feat = (gj.features||[]).find(f => {
+        const p = f.properties||{};
+        const iso = (p.ISO_A3 || p.ADM0_A3 || p.SOV_A3 || "").toUpperCase();
+        const name= (p.NAME || p.NAME_LONG || p.FORMAL_EN || p.ADMIN || "").toUpperCase();
+        return iso==="PRK" || name.includes("KOREA, NORTH") || name.includes("NORTH KOREA");
+      });
+      if(!feat) throw new Error("Natural Earth 110m: PRK not found");
+      applyLayer(feat);
+      console.info("[K-kenchi] NK loaded from Natural Earth 110m:", url);
+      return;
+    } catch(e) {
+      console.error("[K-kenchi] NK load failed from all sources");
+    }
+  }
+
+  async function loadAll(){
+    const badge = $('loadState');
+    badge.textContent = '불러오는 중';
+    let overallBounds=null;
+    for(const url of SIDO_FILES){
+      try{
+        const b = await loadOne(url);
+        if(b && b.isValid && b.isValid()){
+          overallBounds = overallBounds ? overallBounds.extend(b) : b.clone();
+        }
+      }catch(e){ console.error('로드 실패:', url, e); }
+    }
+    await loadNK();  // 북한 외부 로딩
+    if(overallBounds) map.fitBounds(overallBounds);
+    else map.fitWorld();
+    badge.textContent = '완료';
+    recolor();
+  }
+
+  // 버튼 동작
+  document.querySelectorAll('.lvbtn').forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+      if(!selectedKey) return alert('먼저 지도에서 구역을 선택하세요.');
+      const rec=dataMap.get(selectedKey)||{level:0,notes:'',name:''};
+      rec.level=Number(btn.dataset.level);
+      dataMap.set(selectedKey, rec);
+      updateButtons(selectedKey);
+      recolor();
+    });
+  });
+  $('btnApplyOne').addEventListener('click', ()=>{
+    if(!selectedKey) return alert('먼저 지도에서 구역을 선택하세요.');
+    const rec=dataMap.get(selectedKey)||{level:0,notes:'',name:''};
+    rec.notes=$('noteBox').value.trim();
+    dataMap.set(selectedKey, rec);
+    updateButtons(selectedKey);
+    recolor();
+  });
+
+  // 전역 투명도 슬라이더
+  const opacitySlider = $('opacitySlider');
+  const opacityVal = $('opacityVal');
+  function applyOpacity(val){
+    globalOpacity = Math.max(0.01, Math.min(1, val/100));
+    opacityVal.textContent = Math.round(globalOpacity*100) + '%';
+    recolor();
+  }
+  opacitySlider.addEventListener('input', (e)=> applyOpacity(parseInt(e.target.value||'50',10)));
+  applyOpacity(parseInt(opacitySlider.value,10));
+
+  // JSON 저장/불러오기
+  $('btnExport').addEventListener('click', ()=>{
+    const compact = Object.fromEntries([...dataMap.entries()].map(([k,v])=>[k,{level:Number(v.level||0),notes:String(v.notes||''),name:String(v.name||'')} ]));
+    const obj={data:compact};
+    const blob=new Blob([JSON.stringify(obj,null,2)],{type:'application/json'});
+    const a=document.createElement('a');
+    a.href=URL.createObjectURL(blob);
+    a.download='k-kenchi-municipal.json';
+    a.click();
+    URL.revokeObjectURL(a.href);
+  });
+  $('btnImport').addEventListener('click', ()=>$('importJson').click());
+  $('importJson').addEventListener('change', (ev)=>{
+    const f=ev.target.files[0]; if(!f) return;
+    const r=new FileReader();
+    r.onload=()=>{
+      try{
+        const obj=JSON.parse(r.result);
+        const data=obj && obj.data && typeof obj.data==='object' ? obj.data : {};
+        const next=new Map();
+        for (const [k,v] of Object.entries(data)){
+          const level = Number((v||{}).level||0);
+          const notes = String((v||{}).notes||'');
+          const name  = String((v||{}).name||'');
+          next.set(String(k), {level,notes,name});
+        }
+        dataMap = next;
+        recolor();
+        alert('불러오기 완료: '+dataMap.size+'개 구역');
+      }catch(e){ alert('JSON 오류: '+e); }
+    };
+    r.readAsText(f);
+  });
+
+  // 즉시 실행
+  (async function init(){
+    map.options.renderer = L.canvas();
+    await loadAll();
+  })();
+</script>
+</body>
+</html>
