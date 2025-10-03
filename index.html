@@ -121,6 +121,7 @@
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
   let map = L.map('map', { preferCanvas:true }).setView([36.4, 127.8], 7);
+  window.map = map; // <- 전역으로 노출
   L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{ attribution:'&copy; OpenStreetMap' }).addTo(map);
 
   let selectedKey = null;
