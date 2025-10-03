@@ -29,18 +29,13 @@
 </style>
 
   <style>
-    /* Rails pane: visible but pass clicks to polygons */
     .leaflet-pane.rails { pointer-events: none; z-index: 650; }
-
-    /* Simple legend bar */
     #rail-legend { display:none; margin-top:6px; font-size:12px; }
     #rail-legend .chip { display:inline-flex; align-items:center; gap:6px; margin-right:10px; padding:2px 6px; background:#f3f3f3; border-radius:6px; }
     #rail-legend .sw { width:18px; height:4px; border-radius:2px; display:inline-block; }
-    #rail-legend .subway   .sw { background:#2f6fff; }
-    #rail-legend .lrail    .sw { background:#15a05a; }
-    #rail-legend .mono     .sw { background:#7a3cff; }
-    #rail-legend .tram     .sw { background:#ff7b00; }
-    #rail-legend .rail     .sw { background:#555; }
+    #rail-legend .subway .sw{background:#2f6fff;} #rail-legend .lrail .sw{background:#15a05a;}
+    #rail-legend .mono .sw{background:#7a3cff;}  #rail-legend .tram  .sw{background:#ff7b00;}
+    #rail-legend .rail  .sw{background:#555;}
   </style>
 
 </head>
@@ -86,10 +81,10 @@
       <div class="muted">데이터: 시·도 분할 GeoJSON + 북한 외부 로딩</div>
     </div>
   
-    <div class="sec stack" id="urbanrailSec">
-      <label class="row" style="justify-content:space-between">
-        <span>노선도 표시</span>
-        <input type="checkbox" id="toggle-urbanrail">
+    <div class="sec stack" id="urbanrailSec" style="pointer-events:auto">
+      <label style="display:flex;justify-content:space-between;gap:8px;align-items:center;pointer-events:auto">
+        <span>노선도 표시(v2)</span>
+        <input type="checkbox" id="toggle-urbanrail" style="pointer-events:auto">
       </label>
       <div id="rail-legend">
         <span class="chip subway"><span class="sw"></span>지하철</span>
@@ -379,13 +374,12 @@
   const URL_ = 'data/urbanrail.gson';
   const toggle = document.getElementById('toggle-urbanrail');
   const legend = document.getElementById('rail-legend');
-  if (!toggle) return;
+  if (!toggle){ console.warn('toggle-urbanrail not found'); return; }
+  toggle.disabled = false;
 
   let railLayer = null, cache = null, mapRef = null;
 
-  function getMap(){
-    return mapRef || window.map || window._map || null;
-  }
+  function getMap(){ return mapRef || window.map || window._map || null; }
 
   function modeOf(p){
     const r=(p&&p.railway||'').toLowerCase(), t=(p&&p.route||'').toLowerCase();
@@ -412,20 +406,16 @@
     cache = await r.json();
     return cache;
   }
-
-  function ensurePane(m){
-    if (!m.getPane('rails')) m.createPane('rails'); // z-index & pointer-events via CSS
-  }
+  function ensurePane(m){ if (!m.getPane('rails')) m.createPane('rails'); }
 
   async function turnOn(){
     const m = getMap();
-    if (!m) { toggle.checked = false; return; }
+    if (!m) { console.warn('map not ready'); toggle.checked=false; return; }
     try{
       ensurePane(m);
       const gj = await ensureData();
       if (railLayer) { m.removeLayer(railLayer); railLayer = null; }
       railLayer = L.geoJSON(gj, { style }).addTo(m);
-      // Keep polygons clickable
       try { railLayer.bringToFront && railLayer.bringToFront(); } catch(_){}
       if (legend) legend.style.display = 'block';
     }catch(e){
@@ -434,28 +424,27 @@
       if (legend) legend.style.display = 'none';
     }
   }
-
   function turnOff(){
     const m = getMap();
     if (railLayer && m) { m.removeLayer(railLayer); railLayer = null; }
     if (legend) legend.style.display = 'none';
   }
 
-  // Capture Leaflet map without changing original code
+  // Hook into Leaflet map creation (non-invasive)
   (function hook(){
     if (window.L && L.map && !L._railHooked){
       const orig = L.map;
       L.map = function(){
         const mm = orig.apply(this, arguments);
-        mapRef = mm;
-        return mm;
+        mapRef = mm; return mm;
       };
       L._railHooked = true;
     }
     mapRef = mapRef || window.map || window._map || null;
   })();
 
-  toggle.addEventListener('change', e => e.target.checked ? turnOn() : turnOff());
+  toggle.addEventListener('click', e => { e.stopPropagation(); }); // guard
+  toggle.addEventListener('change', e => (e.target.checked ? turnOn() : turnOff()));
 })();
 </script>
 
