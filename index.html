@@ -34,6 +34,7 @@
     .legend-swatch{width:16px;height:4px;border-radius:2px;background:#999}
     .legend-name{font-size:12px}
     .hidden{display:none}
+    .mono{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;opacity:.8}
   </style>
 
 </head>
@@ -81,9 +82,10 @@
   
     <div class="sec stack" id="urbanrailSec">
       <label class="row" style="justify-content:space-between">
-        <span>노선도 표시 (v1)</span>
+        <span>노선도 표시 (v3)</span>
         <input type="checkbox" id="toggle-urbanrail">
       </label>
+      <div class="mono">경로: <code>data/urbanrail.gson</code></div>
       <div id="urbanrail-legend" class="legend-list hidden"></div>
     </div>
 
@@ -362,112 +364,118 @@
 </script>
 
 <script>
-// UrbanRail overlay (data/urbanrail.gson). Robust map capture via L.map monkey-patch.
+// UrbanRail overlay v3 — fetches K-kenchi-easy/data/urbanrail.gson, legend only when checked.
+// Robust map capture: hooks L.map so timing never fails.
 (function(){
   const URL_ = 'data/urbanrail.gson';
   const toggle = document.getElementById('toggle-urbanrail');
   const legendEl = document.getElementById('urbanrail-legend');
   let layer = null, cache = null, wantOn = false, capturedMap = null;
 
-  if (!toggle) return; // sidebar absent
+  if (!toggle) return;
 
   function showLegend(show){
     if (!legendEl) return;
     legendEl.classList.toggle('hidden', !show);
   }
-  function pickColor(p){
-    const c = p && (p.colour||p.color||p.line_color||p.route_color);
-    if (typeof c==='string' && c.trim()) return c.trim();
-    const r=(p&&p.railway||'').toLowerCase(), t=(p&&p.route||'').toLowerCase();
-    const is=k=>r.includes(k)||t.includes(k);
-    if(is('tram'))return '#ff7b00';
-    if(is('monorail'))return '#7a3cff';
-    if(is('light_rail'))return '#15a05a';
-    if(is('subway'))return '#2f6fff';
-    return '#555555';
+
+  // === Same mode logic as the standalone viewer ===
+  function pickMode(tags){
+    const railway = (tags.railway||'').toLowerCase();
+    const route   = (tags.route||'').toLowerCase();
+    if (railway.includes('subway')     || route.includes('subway'))     return 'subway';
+    if (railway.includes('light_rail') || route.includes('light_rail')) return 'light_rail';
+    if (railway.includes('monorail')   || route.includes('monorail'))   return 'monorail';
+    if (railway.includes('tram')       || route.includes('tram'))       return 'tram';
+    if (route.includes('train') || railway.includes('rail')) return 'rail';
+    return 'rail';
   }
-  function styleRail(f){ return { color: pickColor(f.properties||{}), weight: 2.2, opacity: 1 }; }
-  function buildLegend(fc){
-    if (!legendEl) return;
-    const items = new Map();
-    (fc.features||[]).forEach(f=>{
-      if(!f||f.type!=='Feature') return;
-      const p=f.properties||{};
-      const name=p.name||p.ref||p.route||'노선';
-      const color=pickColor(p);
-      const key=name+'|'+color;
-      if (!items.has(key)) items.set(key,{name,color});
-    });
-    const list=[...items.values()].sort((a,b)=>a.name.localeCompare(b.name,'ko'));
-    legendEl.innerHTML = list.map(x=>`<div class="legend-item"><span class="legend-swatch" style="background:${x.color}"></span><span class="legend-name">${x.name}</span></div>`).join('') || '<div class="muted">표시할 노선 정보가 없습니다.</div>';
+  function styleByMode(f){
+    const p=f.properties||{}, mode=p.__mode||pickMode(p);
+    switch(mode){
+      case 'subway':     return { color:'#2f6fff', weight: 2.0, opacity:1 };
+      case 'light_rail': return { color:'#15a05a', weight: 2.4, opacity:1 };
+      case 'monorail':   return { color:'#7a3cff', weight: 2.2, opacity:1 };
+      case 'tram':       return { color:'#ff7b00', weight: 2.4, opacity:1 };
+      default:           return { color:'#555555', weight: 3.0, opacity:.95 };
+    }
   }
+
   async function ensureData(){
     if (cache) return cache;
     const res = await fetch(URL_, { cache:'no-store' });
     if (!res.ok) throw new Error('노선도 로드 실패: '+res.status);
-    cache = await res.json();
+    const gj = await res.json();
+    // Normalize: ensure __mode exists like in the creator tool output
+    if (gj && gj.type==='FeatureCollection' && Array.isArray(gj.features)){
+      for (const f of gj.features){
+        if (!f || f.type!=='Feature' || !f.properties) continue;
+        if (!f.properties.__mode) f.properties.__mode = pickMode(f.properties);
+      }
+    }
+    cache = gj;
     return cache;
   }
+
   function getMap(){
     if (capturedMap) return capturedMap;
     if (window.map && typeof window.map.addLayer==='function') return window.map;
     if (window._map && typeof window._map.addLayer==='function') return window._map;
     return null;
   }
+
   async function enable(){
     wantOn = true;
     const m = getMap();
-    if (!m){ return; } // 지도 생기면 아래 hook에서 자동 진행
+    if (!m){ return; } // wait for hook
     try{
       const fc = await ensureData();
       if (layer){ m.removeLayer(layer); layer=null; }
       layer = L.geoJSON(fc, {
-        style: styleRail,
+        style: styleByMode,
         onEachFeature: (f,l)=>{
           const p=f.properties||{}; const n=p.name||p.ref||'';
-          if(n) l.bindTooltip(n, {sticky:true});
+          if (n) l.bindTooltip(n,{sticky:true});
         }
       }).addTo(m);
-      buildLegend(fc);
       showLegend(true);
-    }catch(e){ console.error(e); toggle.checked=false; showLegend(false); }
+      // Fit only if layer has bounds
+      try{ m.fitBounds(layer.getBounds(), {padding:[20,20]}); }catch(_){}
+    }catch(e){
+      console.error(e); toggle.checked=false; showLegend(false);
+    }
   }
+
   function disable(){
     wantOn = false;
     const m = getMap();
     if (layer && m){ m.removeLayer(layer); layer=null; }
     showLegend(false);
-    legendEl && (legendEl.innerHTML='');
+    if (legendEl) legendEl.innerHTML='';
   }
 
   toggle.addEventListener('change', e=> e.target.checked ? enable() : disable());
 
-  // --- Leaflet map capture: monkey‑patch L.map to store the instance ---
+  // --- Hook L.map to capture map as soon as it's created ---
   function patchLeaflet(){
-    if (!window.L || !L.map || L._kenchiPatched) return;
+    if (!window.L || !L.map || L._kenchiV3Patched) return;
     const orig = L.map;
     L.map = function(){
       const m = orig.apply(this, arguments);
-      try {
+      try{
         capturedMap = m;
-        window.map = window.map || m; // 노출
-        window.dispatchEvent(new CustomEvent('leaflet-map-created', {detail:{map:m}}));
-        if (wantOn) enable(); // 사용자가 이미 체크해둔 경우 즉시 반영
-      } catch(e){}
+        window.map = window.map || m;
+        if (wantOn) enable();
+      }catch(_){}
       return m;
     };
-    L._kenchiPatched = true;
+    L._kenchiV3Patched = true;
   }
-  // 1) 지금 당장 시도
   patchLeaflet();
-  // 2) 아직 Leaflet이 안올라왔다면 주기적으로 재시도
   let tries=0, tm=setInterval(function(){
     patchLeaflet();
-    if (getMap() || (++tries>60)){ clearInterval(tm); } // 최대 ~6초
-  }, 100);
-
-  // 3) 혹시 이미 맵이 만들어져 있다면 한 번 더 enable 시도
-  setTimeout(function(){ if (wantOn) enable(); }, 500);
+    if (getMap() || (++tries>60)) clearInterval(tm);
+  },100);
 })();
 </script>
 
