@@ -27,6 +27,15 @@
     #side { border-right: none; border-bottom: 1px solid #eee; }
   }
 </style>
+
+  <style>/* urbanrail legend */
+    .legend-list{margin-top:6px;max-height:200px;overflow:auto}
+    .legend-item{display:flex;align-items:center;gap:8px;padding:2px 0}
+    .legend-swatch{width:16px;height:4px;border-radius:2px;background:#999}
+    .legend-name{font-size:12px}
+    .hidden{display:none}
+  </style>
+
 </head>
 <body>
 <div id="layout">
@@ -69,6 +78,16 @@
       </div>
       <div class="muted">데이터: 시·도 분할 GeoJSON + 북한 외부 로딩</div>
     </div>
+  
+    <div class="sec stack" id="urbanrailSec">
+      <label class="row" style="justify-content:space-between">
+        <span>노선도 표시 (data/urbanrail.gson)</span>
+        <input type="checkbox" id="toggle-urbanrail">
+      </label>
+      <div id="urbanrail-legend" class="legend-list hidden"></div>
+      <div class="muted">체크하면 노선도와 범례가 표시됩니다.</div>
+    </div>
+
   </aside>
   <main id="map"></main>
 </div>
@@ -342,5 +361,93 @@
     await loadAll();
   })();
 </script>
+
+<script>
+// UrbanRail overlay (load from data/urbanrail.gson, legend only when checked)
+(function(){
+  const URL_ = 'data/urbanrail.gson';
+  const toggle = document.getElementById('toggle-urbanrail');
+  const legendEl = document.getElementById('urbanrail-legend');
+  let layer = null, cache = null;
+
+  if (!toggle) return; // sidebar not found
+
+  function showLegend(show){
+    if (!legendEl) return;
+    if (show) legendEl.classList.remove('hidden');
+    else legendEl.classList.add('hidden');
+  }
+
+  function pickColor(p){
+    const c = p && (p.colour||p.color||p.line_color||p.route_color);
+    if (typeof c==='string' && c.trim()) return c.trim();
+    const r=(p&&p.railway||'').toLowerCase(), t=(p&&p.route||'').toLowerCase();
+    const is=k=>r.includes(k)||t.includes(k);
+    if(is('tram'))return '#ff7b00';
+    if(is('monorail'))return '#7a3cff';
+    if(is('light_rail'))return '#15a05a';
+    if(is('subway'))return '#2f6fff';
+    return '#555555';
+  }
+  function styleRail(f){ return { color: pickColor(f.properties||{}), weight: 2.2, opacity: 1 }; }
+  function buildLegend(fc){
+    if (!legendEl) return;
+    const items = new Map();
+    (fc.features||[]).forEach(f=>{
+      if(!f||f.type!=='Feature') return;
+      const p=f.properties||{};
+      const name=p.name||p.ref||p.route||'노선';
+      const color=pickColor(p);
+      const key=name+'|'+color;
+      if (!items.has(key)) items.set(key,{name,color});
+    });
+    const list=[...items.values()].sort((a,b)=>a.name.localeCompare(b.name,'ko'));
+    legendEl.innerHTML = list.map(x=>`<div class="legend-item">
+      <span class="legend-swatch" style="background:${x.color}"></span>
+      <span class="legend-name">${x.name}</span></div>`).join('') || '<div class="muted">표시할 노선 정보가 없습니다.</div>';
+  }
+
+  async function ensureData(){
+    if (cache) return cache;
+    const res = await fetch(URL_, { cache:'no-store' });
+    if (!res.ok) throw new Error('노선도 로드 실패: '+res.status);
+    cache = await res.json();
+    return cache;
+  }
+
+  async function enable(){
+    // Use the existing Leaflet map defined in the page
+    const map = window.map || window._map;
+    if (!map || !map.addLayer){ alert('지도가 아직 준비되지 않았습니다.'); toggle.checked=false; return; }
+    try{
+      const fc = await ensureData();
+      if (layer){ map.removeLayer(layer); layer=null; }
+      layer = L.geoJSON(fc, {
+        style: styleRail,
+        onEachFeature: (f,l)=>{
+          const p=f.properties||{}; const n=p.name||p.ref||'';
+          if(n) l.bindTooltip(n, {sticky:true});
+        }
+      }).addTo(map);
+      buildLegend(fc);
+      showLegend(true);
+    }catch(e){
+      console.error(e);
+      alert(e.message||e);
+      toggle.checked=false;
+      showLegend(false);
+    }
+  }
+  function disable(){
+    const map = window.map || window._map;
+    if(layer && map && map.removeLayer){ map.removeLayer(layer); layer=null; }
+    showLegend(false);
+    if (legendEl) legendEl.innerHTML='';
+  }
+
+  toggle.addEventListener('change', e=> e.target.checked ? enable() : disable());
+})();
+</script>
+
 </body>
 </html>
