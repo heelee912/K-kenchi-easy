@@ -29,13 +29,13 @@
 </style>
 
   <style>
-    .leaflet-pane.rails { pointer-events: none; z-index: 650; }
-    #rail-legend { display:none; margin-top:6px; font-size:12px; }
-    #rail-legend .chip { display:inline-flex; align-items:center; gap:6px; margin-right:10px; padding:2px 6px; background:#f3f3f3; border-radius:6px; }
-    #rail-legend .sw { width:18px; height:4px; border-radius:2px; display:inline-block; }
-    #rail-legend .subway .sw{background:#2f6fff;} #rail-legend .lrail .sw{background:#15a05a;}
-    #rail-legend .mono .sw{background:#7a3cff;}  #rail-legend .tram  .sw{background:#ff7b00;}
-    #rail-legend .rail  .sw{background:#555;}
+    #rail-legend .chip{display:inline-flex;align-items:center;gap:6px;margin-right:10px;padding:2px 6px;background:#f3f3f3;border-radius:6px}
+    #rail-legend .sw{width:18px;height:4px;border-radius:2px;display:inline-block}
+    #rail-legend .subway .sw{background:#2f6fff}
+    #rail-legend .lrail  .sw{background:#15a05a}
+    #rail-legend .mono   .sw{background:#7a3cff}
+    #rail-legend .tram   .sw{background:#ff7b00}
+    #rail-legend .rail   .sw{background:#555}
   </style>
 
 </head>
@@ -70,6 +70,24 @@
       <label>전체 불투명도: <span id="opacityVal">50%</span></label>
       <input id="opacitySlider" type="range" min="1" max="100" value="50" />
       <div class="muted">모든 구역에 동일하게 적용됩니다.</div>
+    <!-- 노선도 패널 (사이드바) -->
+    <div class="sec stack" id="urbanrailSidebarPanel" style="margin-top:8px">
+      <label style="display:flex;justify-content:space-between;gap:8px;align-items:center">
+        <span>노선도 표시</span>
+        <input type="checkbox" id="rail-toggle" checked>
+      </label>
+      <details id="rail-legend-wrap" style="margin-top:6px">
+        <summary style="cursor:pointer;user-select:none">범례</summary>
+        <div id="rail-legend" style="margin-top:6px;font-size:12px">
+          <span class="chip subway"><span class="sw"></span>지하철</span>
+          <span class="chip lrail"><span class="sw"></span>경전철</span>
+          <span class="chip mono"><span class="sw"></span>모노레일</span>
+          <span class="chip tram"><span class="sw"></span>트램</span>
+          <span class="chip rail"><span class="sw"></span>일반철도</span>
+        </div>
+      </details>
+    </div>
+
     </div>
 
     <div class="sec">
@@ -80,21 +98,6 @@
       </div>
       <div class="muted">데이터: 시·도 분할 GeoJSON + 북한 외부 로딩</div>
     </div>
-  
-    <div class="sec stack" id="urbanrailSec" style="pointer-events:auto">
-      <label style="display:flex;justify-content:space-between;gap:8px;align-items:center;pointer-events:auto">
-        <span>노선도 표시(v2)</span>
-        <input type="checkbox" id="toggle-urbanrail" style="pointer-events:auto">
-      </label>
-      <div id="rail-legend">
-        <span class="chip subway"><span class="sw"></span>지하철</span>
-        <span class="chip lrail"><span class="sw"></span>경전철</span>
-        <span class="chip mono"><span class="sw"></span>모노레일</span>
-        <span class="chip tram"><span class="sw"></span>트램</span>
-        <span class="chip rail"><span class="sw"></span>일반철도</span>
-      </div>
-    </div>
-
   </aside>
   <main id="map"></main>
 </div>
@@ -125,6 +128,8 @@
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
   let map = L.map('map', { preferCanvas:true }).setView([36.4, 127.8], 7);
+window.map = map; // expose Leaflet map for rail overlay
+
   L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{ attribution:'&copy; OpenStreetMap' }).addTo(map);
 
   let selectedKey = null;
@@ -372,15 +377,15 @@
 <script>
 (function(){
   const URL_ = 'data/urbanrail.gson';
-  const toggle = document.getElementById('toggle-urbanrail');
+  const toggle = document.getElementById('rail-toggle');
   const legend = document.getElementById('rail-legend');
-  if (!toggle){ console.warn('toggle-urbanrail not found'); return; }
-  toggle.disabled = false;
+  let railLayer = null, cache = null;
 
-  let railLayer = null, cache = null, mapRef = null;
-
-  function getMap(){ return mapRef || window.map || window._map || null; }
-
+  function isLeafletMap(m){
+    return !!(m && typeof m.addLayer==='function' && typeof m.removeLayer==='function' && typeof m.hasLayer==='function');
+  }
+  function getMap(){ return window.map && isLeafletMap(window.map) ? window.map : null; }
+  function factory(){ return (L && (L.geoJSON||L.geoJson)) ? (L.geoJSON||L.geoJson) : null; }
   function modeOf(p){
     const r=(p&&p.railway||'').toLowerCase(), t=(p&&p.route||'').toLowerCase();
     const has=k=>r.includes(k)||t.includes(k);
@@ -392,59 +397,52 @@
   }
   function style(f){
     const m = modeOf(f.properties||{});
-    if (m==='subway')     return {color:'#2f6fff', weight:2.0, opacity:1, pane:'rails', interactive:false};
-    if (m==='light_rail') return {color:'#15a05a', weight:2.4, opacity:1, pane:'rails', interactive:false};
-    if (m==='monorail')   return {color:'#7a3cff', weight:2.2, opacity:1, pane:'rails', interactive:false};
-    if (m==='tram')       return {color:'#ff7b00', weight:2.4, opacity:1, pane:'rails', interactive:false};
-    return {color:'#555555', weight:3.0, opacity:0.95, pane:'rails', interactive:false};
+    if (m==='subway')     return {color:'#2f6fff', weight:2.0, opacity:1, interactive:false};
+    if (m==='light_rail') return {color:'#15a05a', weight:2.4, opacity:1, interactive:false};
+    if (m==='monorail')   return {color:'#7a3cff', weight:2.2, opacity:1, interactive:false};
+    if (m==='tram')       return {color:'#ff7b00', weight:2.4, opacity:1, interactive:false};
+    return {color:'#555555', weight:3.0, opacity:0.95, interactive:false};
   }
-
-  async function ensureData(){
+  async function data(){
     if (cache) return cache;
     const r = await fetch(URL_, {cache:'no-store'});
-    if (!r.ok) throw new Error('노선도 로드 실패: '+r.status);
     cache = await r.json();
     return cache;
   }
-  function ensurePane(m){ if (!m.getPane('rails')) m.createPane('rails'); }
-
-  async function turnOn(){
-    const m = getMap();
-    if (!m) { console.warn('map not ready'); toggle.checked=false; return; }
+  function nonInteractive(layer){
     try{
-      ensurePane(m);
-      const gj = await ensureData();
-      if (railLayer) { m.removeLayer(railLayer); railLayer = null; }
-      railLayer = L.geoJSON(gj, { style }).addTo(m);
-      try { railLayer.bringToFront && railLayer.bringToFront(); } catch(_){}
-      if (legend) legend.style.display = 'block';
-    }catch(e){
-      console.error(e);
-      toggle.checked = false;
-      if (legend) legend.style.display = 'none';
-    }
+      layer.eachLayer && layer.eachLayer(function(l){
+        if (l.off) l.off();
+        const el = l.getElement && l.getElement();
+        if (el && el.style) el.style.pointerEvents = 'none';
+      });
+    }catch(_){}
+  }
+  async function turnOn(){
+    const m = getMap(); if (!m) return;
+    const f = factory(); if (!f) return;
+    const gj = await data();
+    if (railLayer && m.hasLayer(railLayer)) { try{ m.removeLayer(railLayer); }catch(_){ } }
+    railLayer = f(gj, { style, interactive:false });
+    m.addLayer(railLayer);
+    if (railLayer.bringToBack) try{ railLayer.bringToBack(); }catch(_){ }
+    nonInteractive(railLayer);
+    if (legend) legend.parentElement.open = true, legend.style.display = 'block';
   }
   function turnOff(){
-    const m = getMap();
-    if (railLayer && m) { m.removeLayer(railLayer); railLayer = null; }
+    const m = getMap(); if (!m) return;
+    if (railLayer && m.hasLayer(railLayer)) { try{ m.removeLayer(railLayer); }catch(_){ } }
+    railLayer = null;
     if (legend) legend.style.display = 'none';
   }
-
-  // Hook into Leaflet map creation (non-invasive)
-  (function hook(){
-    if (window.L && L.map && !L._railHooked){
-      const orig = L.map;
-      L.map = function(){
-        const mm = orig.apply(this, arguments);
-        mapRef = mm; return mm;
-      };
-      L._railHooked = true;
-    }
-    mapRef = mapRef || window.map || window._map || null;
-  })();
-
-  toggle.addEventListener('click', e => { e.stopPropagation(); }); // guard
-  toggle.addEventListener('change', e => (e.target.checked ? turnOn() : turnOff()));
+  if (toggle){
+    toggle.addEventListener('change', e => e.target.checked ? turnOn() : turnOff());
+  }
+  // Auto-on after map exists
+  let tries=0; const tm=setInterval(function(){
+    if (getMap()){ clearInterval(tm); if (!toggle || toggle.checked) turnOn(); }
+    else if (++tries>100){ clearInterval(tm); }
+  }, 100);
 })();
 </script>
 
